@@ -1,4 +1,6 @@
 # ======================= Imports ============================
+import base64
+import uuid
 import streamlit as st 
 from streamlit_chat import message
 import os, json, logging
@@ -18,7 +20,7 @@ import re
 from dotenv import load_dotenv
 import pandas as pd
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, time
 from decimal import Decimal
 
 load_dotenv()
@@ -70,9 +72,42 @@ def load_global_state():
     with open(GLOBAL_STATE_FILE, "r") as f:
         return json.load(f)
 
+def safe_jsonify(obj):
+    # Dates & times
+    if isinstance(obj, (datetime, date, time)):
+        return obj.isoformat()
+    if isinstance(obj, timedelta):
+        return obj.total_seconds()
+
+    # Numerics
+    if isinstance(obj, Decimal):
+        return float(obj)
+
+    # IDs / misc
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+
+    # Binary-ish
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        b = bytes(obj)  # handles memoryview/bytearray too
+        try:
+            # Try utf-8 text first
+            return b.decode("utf-8")
+        except UnicodeDecodeError:
+            # Fall back to base64 string so JSON is valid and readable if needed
+            return "base64:" + base64.b64encode(b).decode("ascii")
+
+    # Sets/tuples (occasionally show up in metadata)
+    if isinstance(obj, (set, tuple)):
+        return list(obj)
+
+    # Last resort: stringify unknown types
+    return str(obj)
+
+
 def save_global_state(state):
     with open(GLOBAL_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+        json.dump(state, f, indent=2, default=safe_jsonify)
 
 def safe_jsonify(obj):
     if isinstance(obj, (datetime, date)):
