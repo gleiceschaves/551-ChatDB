@@ -3,7 +3,8 @@
 **ChatDB**  is an intelligent, schema-aware natural language interface (NLI) that supports both relational (PostgreSQL) and document-based (MongoDB) databases. Built using LangChain, OpenAI and Streamlit, it allows users to interact with real databases using plain English—for querying, updating, inserting, and deleting data.
 
 USC DSCI 551 – Spring 2025
-Test it: https://chatdb.gleicechaves.com
+
+Test here: https://chatdb.gleicechaves.com
 ---
 
 ##  Features
