@@ -1,4 +1,6 @@
 # ======================= Imports ============================
+import base64
+import uuid
 import streamlit as st 
 from streamlit_chat import message
 import os, json, logging
@@ -18,7 +20,7 @@ import re
 from dotenv import load_dotenv
 import pandas as pd
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, time
 from decimal import Decimal
 
 load_dotenv()
@@ -61,7 +63,9 @@ if(IS_MONGO_AUTH):
 else:
     MONGO_URI = f"mongodb://{MONGO_HOST}:{MONGO_PORT}/"
 
-DBS_TO_IGNORE = ["postgres", "admin", "config", "local", POSTGRES_USER]
+DBS_TO_IGNORE = ["postgres", "admin", "config", "local", 
+                 "synapse", "LIAMU", "configuration", "global", "notifications", "qrmanager", "ride", "store", "userDetails", "spaceshare",
+                 POSTGRES_USER]
     
 # ======================= GLOBAL DB STATE ============================
 def load_global_state():
@@ -70,18 +74,42 @@ def load_global_state():
     with open(GLOBAL_STATE_FILE, "r") as f:
         return json.load(f)
 
-def save_global_state(state):
-    with open(GLOBAL_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
-
 def safe_jsonify(obj):
-    if isinstance(obj, (datetime, date)):
+    # Dates & times
+    if isinstance(obj, (datetime, date, time)):
         return obj.isoformat()
+    if isinstance(obj, timedelta):
+        return obj.total_seconds()
+
+    # Numerics
     if isinstance(obj, Decimal):
         return float(obj)
-    if isinstance(obj, bytes):
-        return obj.decode()
-    return obj
+
+    # IDs / misc
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+
+    # Binary-ish
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        b = bytes(obj)  # handles memoryview/bytearray too
+        try:
+            # Try utf-8 text first
+            return b.decode("utf-8")
+        except UnicodeDecodeError:
+            # Fall back to base64 string so JSON is valid and readable if needed
+            return "base64:" + base64.b64encode(b).decode("ascii")
+
+    # Sets/tuples (occasionally show up in metadata)
+    if isinstance(obj, (set, tuple)):
+        return list(obj)
+
+    # Last resort: stringify unknown types
+    return str(obj)
+
+
+def save_global_state(state):
+    with open(GLOBAL_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2, default=safe_jsonify)
 
 def update_global_state():
     logging.info("Updating global DB state from live databases...")
@@ -849,6 +877,49 @@ agent_chain_with_memory = RunnableWithMessageHistory(
     history_messages_key="chat_history" 
 )
 
+
+def build_intro_message(db_state: List[Dict[str, Any]]) -> str:
+    """Create a short welcome message with schema highlights and sample prompts."""
+    schema_lines = []
+    for db in db_state:
+        schema_lines.append(f"- **{db['db']}** ({db['type']})")
+        tables = db.get("tables", {}) or {}
+        if not tables:
+            schema_lines.append("  - No tables or collections discovered yet.")
+            continue
+        for idx, (table_name, meta) in enumerate(tables.items()):
+            if idx >= 3:
+                remaining = len(tables) - idx
+                schema_lines.append(f"  - ... {remaining} more")
+                break
+            raw_schema = meta.get("schema", "")
+            if isinstance(raw_schema, dict):
+                formatted_schema = ", ".join(
+                    f"{field} ({dtype})" for field, dtype in raw_schema.items()
+                )
+            else:
+                formatted_schema = str(raw_schema)
+            if len(formatted_schema) > 120:
+                formatted_schema = formatted_schema[:117] + "..."
+            schema_lines.append(f"  - `{table_name}`: {formatted_schema}")
+
+    schema_section = "\n".join(schema_lines) if schema_lines else "- No databases available yet."
+
+    sample_prompts = "\n".join([
+        "- \"List the hospital with the most patients.\"",
+        "- \"Show me the schema for the hospitals table.\"",
+        "- \"Insert a new refugee with the name Jane Doe.\"",
+    ])
+
+    intro = (
+        "Hi, I'm Gleice's ChatDB AI Agent. I can explore your SQL and MongoDB data, explain schemas, and help craft insert/update/delete operations.\n\n"
+        "**Current sample database snapshot:**\n"
+        f"{schema_section}\n\n"
+        "**Try asking me:**\n"
+        f"{sample_prompts}"
+    )
+    return intro
+
 # ========================= GENERATE LOGIC ============================
 
 def generate_response(input_text: str) -> str:
@@ -1104,7 +1175,9 @@ if __name__ == "__main__":
 
         # Load memory and chat state
         if "messages" not in st.session_state:
-            st.session_state.messages = []
+            st.session_state.messages = [
+                {"role": "bot", "content": build_intro_message(global_db_state)}
+            ]
         if "session_id" not in st.session_state:
             st.session_state.session_id = str(uuid.uuid4())
 
